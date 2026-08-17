@@ -1,18 +1,3 @@
-# -*- coding: utf-8 -*-
-
-################################################################################
-## Form generated from reading UI file 'main_window.ui'
-##
-## Widgets dinâmicos (gráfico pyqtgraph, tabela de eventos, cartões de
-## telemetria) são montados em código dentro de setupUi() pois dependem
-## de componentes que não fazem parte da paleta padrão do Qt Designer
-## (ex.: PlotWidget do pyqtgraph). A estrutura de menu/ações permanece
-## definida em main_window.ui.
-##
-## AVISO! Nenhuma regra de negócio deve ser escrita neste arquivo.
-## Toda a lógica pertence a /controllers.
-################################################################################
-
 from PySide6.QtCore import Qt, QRect, QMetaObject
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
@@ -93,6 +78,15 @@ class Ui_MainWindow(object):
             "QPushButton{background-color:#e74c3c; color:white; font-weight:bold; "
             "border-radius:6px;} QPushButton:hover{background-color:#c0392b;}")
 
+        self.btn_rearmar_disjuntor = QPushButton(u"↺ Rearmar Disjuntor")
+        self.btn_rearmar_disjuntor.setObjectName(u"btn_rearmar_disjuntor")
+        self.btn_rearmar_disjuntor.setMinimumHeight(36)
+        self.btn_rearmar_disjuntor.setEnabled(False)
+        self.btn_rearmar_disjuntor.setStyleSheet(
+            "QPushButton{background-color:#27ae60; color:white; font-weight:bold; "
+            "border-radius:6px;} QPushButton:hover{background-color:#1e8449;} "
+            "QPushButton:disabled{background-color:#a9dfbf; color:#eafaf1;}")
+
         limite_row = QHBoxLayout()
         self.lbl_limite_alerta = QLabel(u"Limite de alerta de consumo (W):")
         self.spin_limite_alerta = QDoubleSpinBox()
@@ -105,6 +99,7 @@ class Ui_MainWindow(object):
         limite_row.addWidget(self.spin_limite_alerta)
 
         comandos_layout.addWidget(self.btn_corte_emergencial)
+        comandos_layout.addWidget(self.btn_rearmar_disjuntor)
         comandos_layout.addLayout(limite_row)
 
         linha1.addWidget(self.grp_comandos, 2)
@@ -122,7 +117,7 @@ class Ui_MainWindow(object):
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel("left", "Potência (W)")
-        self.plot_widget.setLabel("bottom", "Horas atrás")
+        self.plot_widget.setLabel("bottom", "Linha do tempo (mais recente à direita)")
         self.curva_consumo = self.plot_widget.plot(
             pen=mkPen(color="#2980b9", width=2), symbol="o", symbolSize=5,
             symbolBrush="#2980b9")
