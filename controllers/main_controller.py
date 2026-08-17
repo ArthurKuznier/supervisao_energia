@@ -5,7 +5,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QTableWidgetItem
 
 from supervisao_energia.ui.Ui_main_window import Ui_MainWindow
-from controllers.limits_controller import LimitsDialog
+from supervisao_energia.controllers.limits_controller import LimitsDialog
 
 try:
     from serial.tools import list_ports
@@ -15,14 +15,6 @@ except ImportError:
 
 
 class MainController(QMainWindow):
-    """
-    Controller da janela principal (Dashboard de Monitoramento - Smart Grid).
-
-    Nesta entrega (A1/1) a aplicação não está fisicamente conectada ao
-    hardware: os dados de telemetria são simulados e a "conexão" serial
-    apenas atualiza o status visual da tela. A integração real com a
-    porta serial será feita na Unidade 4.
-    """
 
     def __init__(self):
         super().__init__()
@@ -36,16 +28,13 @@ class MainController(QMainWindow):
             {"parametro": u"Limite Máximo de Corrente", "valor": 10.0, "unidade": "A"},
             {"parametro": u"Limite Máximo de Tensão", "valor": 230.0, "unidade": "V"},
         ]
-        self.historico_potencia = []  # janela deslizante para o gráfico
+        self.historico_potencia = []
 
         self._popular_portas_seriais()
         self._carregar_dados_iniciais_grafico()
         self._conectar_sinais()
         self._iniciar_simulacao_telemetria()
 
-    # ------------------------------------------------------------------
-    # Configuração inicial
-    # ------------------------------------------------------------------
     def _popular_portas_seriais(self):
         portas = []
         if PYSERIAL_DISPONIVEL:
@@ -55,16 +44,12 @@ class MainController(QMainWindow):
         self.ui.combo_porta.addItems(portas)
 
     def _carregar_dados_iniciais_grafico(self):
-        """Preenche o gráfico com uma curva de demanda de exemplo das
-        últimas 24 horas, para demonstrar a renderização do componente
-        assim que a tela abre."""
         agora = datetime.now()
         horas = list(range(24, 0, -1))
         potencias = []
         base = 1200
         for h in horas:
             hora_do_dia = (agora - timedelta(hours=h)).hour
-            # Curva simples com pico no período diurno/noturno
             fator = 1.0 + 0.6 * abs((hora_do_dia - 19) % 24 - 12) / 12
             potencias.append(round(base * fator + random.uniform(-80, 80), 1))
 
@@ -85,9 +70,6 @@ class MainController(QMainWindow):
         self.timer_telemetria.start()
         self.atualizar_telemetria()
 
-    # ------------------------------------------------------------------
-    # Telemetria (simulada nesta entrega)
-    # ------------------------------------------------------------------
     def atualizar_telemetria(self):
         tensao = round(random.uniform(215.0, 235.0), 1)
         corrente = round(random.uniform(2.0, 12.0), 2)
@@ -123,9 +105,6 @@ class MainController(QMainWindow):
                     "Alerta", f"Tensão ({tensao} V) ultrapassou "
                               f"'{regra['parametro']}' ({regra['valor']} V).")
 
-    # ------------------------------------------------------------------
-    # Comandos de acionamento
-    # ------------------------------------------------------------------
     def corte_emergencial(self):
         resposta = QMessageBox.question(
             self, "Confirmar Corte Emergencial",
@@ -157,9 +136,6 @@ class MainController(QMainWindow):
                 "font-weight:bold; font-size:14px; padding:4px 10px; "
                 "border-radius:6px; background-color:#fdecea; color:#922b21;")
 
-    # ------------------------------------------------------------------
-    # Comunicação serial (apenas visual nesta entrega - A1/1)
-    # ------------------------------------------------------------------
     def conectar_serial(self):
         porta = self.ui.combo_porta.currentText()
         baud = self.ui.combo_baud.currentText()
@@ -186,9 +162,6 @@ class MainController(QMainWindow):
 
         self.registrar_evento("Conexão", "Conexão serial encerrada pelo operador.")
 
-    # ------------------------------------------------------------------
-    # Configuração de limites (QDialog modal)
-    # ------------------------------------------------------------------
     def abrir_config_limites(self):
         dialogo = LimitsDialog(regras_atuais=self.regras_limite, parent=self)
         if dialogo.exec() == LimitsDialog.Accepted:
@@ -197,9 +170,6 @@ class MainController(QMainWindow):
                 "Configuração",
                 f"Regras de limite atualizadas ({len(self.regras_limite)} regra(s)).")
 
-    # ------------------------------------------------------------------
-    # Histórico de eventos e registros
-    # ------------------------------------------------------------------
     def registrar_evento(self, tipo, descricao):
         tabela = self.ui.table_eventos
         linha = 0
