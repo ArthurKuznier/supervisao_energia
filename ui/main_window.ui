@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1180</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Smart Grid Monitor - Dashboard</string>
+  </property>
+  <widget class="QWidget" name="centralwidget"/>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1180</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuConfiguracoes">
+    <property name="title">
+     <string>Configura&amp;ções</string>
+    </property>
+    <addaction name="actionLimites"/>
+   </widget>
+   <addaction name="menuConfiguracoes"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionLimites">
+   <property name="text">
+    <string>Limites de Alerta...</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
