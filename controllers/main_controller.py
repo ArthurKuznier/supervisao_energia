@@ -15,7 +15,6 @@ except ImportError:
 
 
 class MainController(QMainWindow):
-
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
@@ -28,6 +27,8 @@ class MainController(QMainWindow):
             {"parametro": u"Limite Máximo de Tensão", "valor": 230.0, "unidade": "V"},
         ]
         self.historico_potencia = []
+        self.historico_x = []
+        self.contador_amostras = 0
 
         self._popular_portas_seriais()
         self._carregar_dados_iniciais_grafico()
@@ -44,19 +45,21 @@ class MainController(QMainWindow):
 
     def _carregar_dados_iniciais_grafico(self):
         agora = datetime.now()
-        horas = list(range(24, 0, -1))
         potencias = []
         base = 1200
-        for h in horas:
+        for h in range(23, -1, -1):
             hora_do_dia = (agora - timedelta(hours=h)).hour
             fator = 1.0 + 0.6 * abs((hora_do_dia - 19) % 24 - 12) / 12
             potencias.append(round(base * fator + random.uniform(-80, 80), 1))
 
         self.historico_potencia = potencias
-        self.ui.curva_consumo.setData(horas[::-1], potencias)
+        self.historico_x = list(range(len(potencias)))
+        self.contador_amostras = len(potencias)
+        self.ui.curva_consumo.setData(self.historico_x, self.historico_potencia)
 
     def _conectar_sinais(self):
         self.ui.btn_corte_emergencial.clicked.connect(self.corte_emergencial)
+        self.ui.btn_rearmar_disjuntor.clicked.connect(self.rearmar_disjuntor)
         self.ui.btn_conectar.clicked.connect(self.conectar_serial)
         self.ui.btn_desconectar.clicked.connect(self.desconectar_serial)
         self.ui.btn_config_limites.clicked.connect(self.abrir_config_limites)
@@ -64,28 +67,37 @@ class MainController(QMainWindow):
 
     def _iniciar_simulacao_telemetria(self):
         self.timer_telemetria = QTimer(self)
-        self.timer_telemetria.setInterval(2000)  # 2 segundos
+        self.timer_telemetria.setInterval(2000)
         self.timer_telemetria.timeout.connect(self.atualizar_telemetria)
         self.timer_telemetria.start()
         self.atualizar_telemetria()
 
     def atualizar_telemetria(self):
-        tensao = round(random.uniform(215.0, 235.0), 1)
-        corrente = round(random.uniform(2.0, 12.0), 2)
-        potencia = round(tensao * corrente, 1)
+        if not self.disjuntor_fechado:
+            tensao, corrente, potencia = 0.0, 0.0, 0.0
+        else:
+            tensao = round(random.uniform(215.0, 235.0), 1)
+            corrente = round(random.uniform(2.0, 12.0), 2)
+            potencia = round(tensao * corrente, 1)
 
         self.ui.lbl_tensao_valor.setText(f"{tensao} V")
         self.ui.lbl_corrente_valor.setText(f"{corrente} A")
         self.ui.lbl_potencia_valor.setText(f"{potencia} W")
 
         self._atualizar_grafico(potencia)
-        self._verificar_limites(tensao, corrente, potencia)
+
+        if self.disjuntor_fechado:
+            self._verificar_limites(tensao, corrente, potencia)
 
     def _atualizar_grafico(self, nova_potencia):
         self.historico_potencia.append(nova_potencia)
+        self.historico_x.append(self.contador_amostras)
+        self.contador_amostras += 1
+
         self.historico_potencia = self.historico_potencia[-24:]
-        horas = list(range(len(self.historico_potencia) - 1, -1, -1))
-        self.ui.curva_consumo.setData(horas, self.historico_potencia)
+        self.historico_x = self.historico_x[-24:]
+
+        self.ui.curva_consumo.setData(self.historico_x, self.historico_potencia)
 
     def _verificar_limites(self, tensao, corrente, potencia):
         limite_alerta_potencia = self.ui.spin_limite_alerta.value()
@@ -116,8 +128,26 @@ class MainController(QMainWindow):
 
         self.disjuntor_fechado = False
         self._atualizar_led_disjuntor()
+        self.ui.btn_corte_emergencial.setEnabled(False)
+        self.ui.btn_rearmar_disjuntor.setEnabled(True)
         self.registrar_evento(
             "Corte Emergencial", "Disjuntor aberto manualmente pelo operador.")
+
+    def rearmar_disjuntor(self):
+        resposta = QMessageBox.question(
+            self, "Rearmar Disjuntor",
+            "Confirma o rearme do disjuntor e o restabelecimento da carga?",
+            QMessageBox.Yes | QMessageBox.No)
+
+        if resposta != QMessageBox.Yes:
+            return
+
+        self.disjuntor_fechado = True
+        self._atualizar_led_disjuntor()
+        self.ui.btn_corte_emergencial.setEnabled(True)
+        self.ui.btn_rearmar_disjuntor.setEnabled(False)
+        self.registrar_evento(
+            "Rearme", "Disjuntor rearmado e carga restabelecida pelo operador.")
 
     def _atualizar_led_disjuntor(self):
         if self.disjuntor_fechado:
