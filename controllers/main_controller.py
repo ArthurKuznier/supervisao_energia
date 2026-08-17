@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QTableWidgetItem
 
-from supervisao_energia.ui.Ui_main_window import Ui_MainWindow
-from supervisao_energia.controllers.limits_controller import LimitsDialog
+from ui.Ui_main_window import Ui_MainWindow
+from controllers.limits_controller import LimitsDialog
 
 try:
     from serial.tools import list_ports
@@ -21,7 +21,6 @@ class MainController(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
-        # Estado interno da aplicação (nesta entrega, sem camada de Model)
         self.disjuntor_fechado = True
         self.conectado = False
         self.regras_limite = [
