@@ -1,12 +1,3 @@
-# -*- coding: utf-8 -*-
-
-################################################################################
-## Form generated from reading UI file 'limits_dialog.ui'
-##
-## AVISO! Nenhuma regra de negócio deve ser escrita neste arquivo.
-## Toda a lógica pertence a /controllers.
-################################################################################
-
 from PySide6.QtCore import Qt, QMetaObject
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
