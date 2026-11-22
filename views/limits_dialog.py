@@ -1,9 +1,7 @@
 import logging
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QDialog, QTableWidgetItem, QDoubleSpinBox, QMessageBox
-)
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QDialog, QDoubleSpinBox, QMessageBox, QTableWidgetItem
 
 from ui.Ui_limits_dialog import Ui_LimitsDialog
 
@@ -11,12 +9,13 @@ logger = logging.getLogger("smartgrid")
 
 
 class LimitsDialog(QDialog):
+    salvar_solicitado = Signal(list)
     def __init__(self, regras_atuais=None, parent=None):
         super().__init__(parent)
         self.ui = Ui_LimitsDialog()
         self.ui.setupUi(self)
 
-        self.ui.btn_adicionar_regra.clicked.connect(self.adicionar_regra)
+        self.ui.btn_adicionar_regra.clicked.connect(lambda: self.adicionar_regra())
         self.ui.btn_remover_regra.clicked.connect(self.remover_regra_selecionada)
         self.ui.buttonBox.accepted.connect(self.salvar)
         self.ui.buttonBox.rejected.connect(self.reject)
@@ -56,39 +55,7 @@ class LimitsDialog(QDialog):
         self.ui.table_regras.removeRow(linha)
 
     def salvar(self):
-        tabela = self.ui.table_regras
-
-        if tabela.rowCount() < 2:
-            QMessageBox.warning(
-                self, "Regras Insuficientes",
-                "É necessário cadastrar no mínimo duas regras de alerta.")
-            return
-
-        for linha in range(tabela.rowCount()):
-            item_parametro = tabela.item(linha, 0)
-            spin_valor = tabela.cellWidget(linha, 1)
-            item_unidade = tabela.item(linha, 2)
-
-            if not item_parametro or not item_parametro.text().strip():
-                QMessageBox.warning(
-                    self, "Campo Inválido",
-                    f"O campo 'Parâmetro' na linha {linha + 1} não pode ser vazio.")
-                return
-
-            if spin_valor and spin_valor.value() <= 0:
-                QMessageBox.warning(
-                    self, "Valor Inválido",
-                    f"O valor limite na linha {linha + 1} deve ser maior que zero.")
-                return
-
-            if not item_unidade or not item_unidade.text().strip():
-                QMessageBox.warning(
-                    self, "Campo Inválido",
-                    f"O campo 'Unidade' na linha {linha + 1} não pode ser vazio.")
-                return
-
-        logger.info("Validação de regras concluída: %d regra(s) aprovadas.", tabela.rowCount())
-        self.accept()
+        self.salvar_solicitado.emit(self.get_regras())
 
     def get_regras(self):
         regras = []

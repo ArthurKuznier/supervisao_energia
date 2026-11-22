@@ -1,7 +1,7 @@
-import sqlite3
 import logging
+import sqlite3
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from database.connection import get_connection
 
@@ -9,6 +9,28 @@ logger = logging.getLogger("smartgrid")
 
 
 class DispositivoRepository:
+
+    @staticmethod
+    def acionar(tag: str, novo_status: str) -> Dict:
+        from models.telemetria import Disjuntor
+
+        estado = Disjuntor(novo_status).estado
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        tipo = "Corte Emergencial" if estado == "ABERTO" else "Rearme"
+        descricao = ("Disjuntor aberto manualmente pelo operador." if estado == "ABERTO"
+                     else "Disjuntor rearmado e carga restabelecida pelo operador.")
+        with get_connection() as conn:
+            resultado = conn.execute(
+                "UPDATE dispositivos SET status = ?, ultima_atualizacao = ? WHERE tag = ?",
+                (estado, agora, tag),
+            )
+            if resultado.rowcount != 1:
+                raise ValueError(f"Dispositivo não encontrado: {tag}")
+            conn.execute(
+                "INSERT INTO historico_eventos (data_hora, tipo_evento, valor_medido, descricao) VALUES (?, ?, ?, ?)",
+                (agora, tipo, None, descricao),
+            )
+        return {"data_hora": agora, "tipo_evento": tipo, "descricao": descricao}
 
     @staticmethod
     def buscar_por_tag(tag: str) -> Optional[Dict]:
