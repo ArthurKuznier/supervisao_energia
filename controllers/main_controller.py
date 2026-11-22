@@ -32,6 +32,7 @@ class MainController(QObject):
         self._encerrando = False
         self._contador_pedidos = 0
         self._retornos = {}
+        self._pedidos_pendentes = set()
         self._erros_notificados = set()
         self.modo_historico = False
         self._versao_consulta = 0
@@ -87,8 +88,13 @@ class MainController(QObject):
     def _solicitar(self, operacao, parametros, retorno=None):
         if self._encerrando:
             return
+        if operacao == "medicao" and len(self._pedidos_pendentes) >= 512:
+            self.desconectar_serial()
+            self._erro_banco(-1, "medicao", "A fila de gravação está cheia. A recepção foi interrompida.")
+            return
         self._contador_pedidos += 1
         pedido_id = self._contador_pedidos
+        self._pedidos_pendentes.add(pedido_id)
         if retorno is not None:
             self._retornos[pedido_id] = retorno
         self.pedido_banco.emit(pedido_id, operacao, deepcopy(parametros))
@@ -96,13 +102,17 @@ class MainController(QObject):
 
     @Slot(int, str, object)
     def _resultado_banco(self, pedido_id, operacao, dados):
+        self._pedidos_pendentes.discard(pedido_id)
         retorno = self._retornos.pop(pedido_id, None)
         if retorno is not None and not self._encerrando:
             retorno(dados)
 
     @Slot(int, str, str)
     def _erro_banco(self, pedido_id, operacao, mensagem):
+        self._pedidos_pendentes.discard(pedido_id)
         self._retornos.pop(pedido_id, None)
+        if operacao == "medicao" and not self._encerrando:
+            self.desconectar_serial()
         logger.error("Falha na persistência (%s): %s", operacao, mensagem)
         chave = (operacao, mensagem)
         if not self._encerrando and chave not in self._erros_notificados:
@@ -158,7 +168,11 @@ class MainController(QObject):
         self.registrar_evento("Conexão", f"Conectado à porta {porta} (baud rate {baud}).")
 
     def desconectar_serial(self):
+        if self.conectado:
+            self.registrar_evento("Conexão", "Conexão serial encerrada pelo operador.")
         self._conectando = False
+        self.conectado = False
+        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
         self.desconectar_porta.emit()
 
     @Slot()

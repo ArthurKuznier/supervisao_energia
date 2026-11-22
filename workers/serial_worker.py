@@ -29,6 +29,7 @@ class SerialWorker(QObject):
         self.buffer = bytearray()
         self.pendente = None
         self.sequencia = 0
+        self._finalizando = False
 
     @Slot()
     def iniciar(self):
@@ -39,7 +40,7 @@ class SerialWorker(QObject):
 
     @Slot(dict)
     def conectar(self, config):
-        self.desconectar()
+        self._fechar()
         try:
             self.config = dict(config)
             baud = int(config["baud_rate"])
@@ -62,7 +63,7 @@ class SerialWorker(QObject):
 
     def _receber(self):
         try:
-            self.buffer.extend(self.porta.read(min(self.porta.in_waiting, TAMANHO_MAXIMO)))
+            self.buffer.extend(self.porta.read(TAMANHO_MAXIMO))
             if len(self.buffer) > TAMANHO_MAXIMO:
                 self.buffer.clear()
                 logger.warning("Pacote serial descartado: tamanho excedido.")
@@ -73,10 +74,15 @@ class SerialWorker(QObject):
                 self.buffer = bytearray(restante)
                 try:
                     self._processar(decodificar(linha))
+                    if self.porta is None:
+                        return
                 except (ValueError, TypeError, KeyError, UnicodeError) as exc:
                     logger.warning("Pacote serial descartado: %s", exc)
             if self.estado in ("HELLO", "START") and monotonic() > self.prazo:
                 raise serial.SerialException("Timeout: a placa não confirmou o handshake.")
+            if self.estado == "STOP" and monotonic() > self.prazo:
+                self._fechar()
+                return
             if self.estado == "ATIVO":
                 if self.pendente and monotonic() > self.pendente["prazo"]:
                     raise serial.SerialException("O disjuntor não confirmou o comando. Estado deve ser verificado na placa.")
@@ -90,6 +96,9 @@ class SerialWorker(QObject):
 
     def _processar(self, pacote):
         if pacote["tipo"] == "ACK" and pacote.get("comando") == self.estado:
+            if self.estado == "STOP":
+                self._fechar()
+                return
             if self.estado == "HELLO":
                 self.porta.baudrate = int(self.config["baud_rate"])
                 self.estado = "START"
@@ -114,7 +123,7 @@ class SerialWorker(QObject):
             self.leitura.emit(leitura)
 
     def _falhar(self, mensagem):
-        self.desconectar()
+        self._fechar()
         self.erro.emit(mensagem)
 
     @Slot(str)
@@ -133,22 +142,35 @@ class SerialWorker(QObject):
 
     @Slot()
     def desconectar(self):
+        if self.porta and self.estado == "ATIVO":
+            try:
+                self._enviar({"tipo": "STOP"})
+                self.estado = "STOP"
+                self.prazo = monotonic() + 1
+                return
+            except (serial.SerialException, OSError):
+                pass
+        self._fechar()
+
+    def _fechar(self):
         if self.timer:
             self.timer.stop()
         if self.porta:
             try:
-                self._enviar({"tipo": "STOP"})
-            except (serial.SerialException, OSError):
-                pass
-            finally:
                 self.porta.close()
+            except OSError as exc:
+                logger.error("Falha ao fechar porta serial: %s", exc)
+            finally:
                 self.porta = None
         self.estado = "DESCONECTADO"
         self.pendente = None
         self.buffer.clear()
         self.desconectado.emit()
+        if self._finalizando:
+            self._finalizando = False
+            self.finalizado.emit()
 
     @Slot()
     def encerrar(self):
+        self._finalizando = True
         self.desconectar()
-        self.finalizado.emit()

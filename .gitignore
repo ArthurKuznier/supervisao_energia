@@ -23,6 +23,9 @@ ENV/
 *.db-shm
 
 logs/*.log
+data/*.db
+data/config.json
+data/.config-*.tmp
 
 dist/
 build/

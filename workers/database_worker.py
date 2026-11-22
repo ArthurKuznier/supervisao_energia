@@ -41,8 +41,13 @@ class DatabaseWorker(QObject):
         if operacao == "config":
             salvar_config(parametros)
         elif operacao == "regras":
+            anteriores = RegraRepository.listar_todos()
             RegraRepository.substituir_todas(parametros["regras_limite"])
-            salvar_config(parametros)
+            try:
+                salvar_config(parametros)
+            except (OSError, ValueError):
+                RegraRepository.substituir_todas([{"parametro": r["parametro"], "valor": r["valor_limite"], "unidade": r["unidade"]} for r in anteriores])
+                raise
             return parametros["regras_limite"]
         elif operacao == "acionar":
             return DispositivoRepository.acionar("DISJ-PRINCIPAL", parametros["estado"])
