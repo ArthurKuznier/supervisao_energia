@@ -42,9 +42,9 @@ class Monitoramento:
             fator = 1 + 0.6 * abs((hora - 19) % 24 - 12) / 12
             self.adicionar_potencia(round(1200 * fator + random.uniform(-80, 80), 1))
 
-    def adicionar_potencia(self, potencia):
+    def adicionar_potencia(self, potencia, timestamp=None):
         self.potencias.append(potencia)
-        self.eixo_x.append(self.contador)
+        self.eixo_x.append(timestamp if timestamp is not None else self.contador)
         self.contador += 1
         self.potencias = self.potencias[-24:]
         self.eixo_x = self.eixo_x[-24:]

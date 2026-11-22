@@ -32,6 +32,10 @@ class MainController(QObject):
         self._contador_pedidos = 0
         self._retornos = {}
         self._erros_notificados = set()
+        self.modo_historico = False
+        self._versao_consulta = 0
+        self.view.historico_solicitado.connect(self.pedir_historico)
+        self.view.tempo_real_solicitado.connect(self.voltar_tempo_real)
         self.view.conectar_solicitado.connect(self.conectar_serial)
         self.view.desconectar_solicitado.connect(self.desconectar_serial)
         self.view.limites_solicitados.connect(self.editar_limites)
@@ -120,9 +124,10 @@ class MainController(QObject):
         if not self.pronto or not self.conectado or self._encerrando:
             return
         dados = {**leitura.registro(), "timestamp": datetime.now(timezone.utc).isoformat()}
-        self.model.adicionar_potencia(leitura.potencia)
+        self.model.adicionar_potencia(leitura.potencia, datetime.fromisoformat(dados["timestamp"]).timestamp())
         self.view.mostrar_leitura(dados)
-        self.view.plotar(self.model.eixo_x, self.model.potencias)
+        if not self.modo_historico:
+            self.view.plotar(self.model.eixo_x, self.model.potencias)
         self._solicitar("medicao", {"dados": dados, "origem": "serial"})
         for medido, descricao in self.model.avaliar(leitura):
             logger.warning(descricao)
@@ -228,6 +233,31 @@ class MainController(QObject):
 
     def consultar_historico(self, **filtros):
         return self._solicitar("consultar", filtros, self.historico_recebido.emit)
+
+    def pedir_historico(self, filtros):
+        filtros = dict(filtros)
+        for nome in ("inicio", "fim"):
+            epoch = filtros.pop(nome + "_epoch", None)
+            if epoch is not None:
+                filtros[nome] = datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+        self._versao_consulta += 1
+        versao = self._versao_consulta
+        self._solicitar("consultar", filtros, lambda dados: self._mostrar_historico(versao, dados))
+
+    def _mostrar_historico(self, versao, dados):
+        if versao != self._versao_consulta:
+            return
+        self.modo_historico = True
+        self.view.plotar([datetime.fromisoformat(linha["timestamp"]).timestamp() for linha in dados],
+                         [linha["potencia"] for linha in dados])
+        self.view.mostrar_modo_grafico(f"Consulta histórica — {len(dados)} leituras")
+        self.historico_recebido.emit(dados)
+
+    def voltar_tempo_real(self):
+        self._versao_consulta += 1
+        self.modo_historico = False
+        self.view.mostrar_modo_grafico("Monitoramento em Tempo Real")
+        self.view.plotar(self.model.eixo_x, self.model.potencias)
 
     def encerrar(self):
         if self._encerrando:

@@ -1,5 +1,6 @@
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QTableWidgetItem
+from PySide6.QtCore import Signal, QDateTime
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QTableWidgetItem, QHBoxLayout, QComboBox, QSpinBox, QDateTimeEdit, QPushButton
+from pyqtgraph import DateAxisItem
 
 from ui.Ui_main_window import Ui_MainWindow
 from views.limits_dialog import LimitsDialog
@@ -13,12 +14,36 @@ class MainWindow(QMainWindow):
     fechar_solicitado = Signal()
     limite_potencia_alterado = Signal(float)
     validacao_limites_solicitada = Signal(list)
+    historico_solicitado = Signal(dict)
+    tempo_real_solicitado = Signal()
 
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self.ui.combo_porta.setEditable(True)
+        self.ui.plot_widget.setAxisItems({"bottom": DateAxisItem()})
+        filtros = QHBoxLayout()
+        self.filtro_historico = QComboBox()
+        self.filtro_historico.addItems(["Últimas N leituras", "Período"])
+        self.quantidade_historico = QSpinBox()
+        self.quantidade_historico.setRange(1, 10000)
+        self.quantidade_historico.setValue(100)
+        agora = QDateTime.currentDateTime()
+        self.inicio_historico = QDateTimeEdit(agora.addDays(-1))
+        self.fim_historico = QDateTimeEdit(agora)
+        for campo in (self.inicio_historico, self.fim_historico):
+            campo.setCalendarPopup(True)
+            campo.setDisplayFormat("dd/MM/yyyy HH:mm:ss")
+        self.botao_historico = QPushButton("Consultar")
+        self.botao_tempo_real = QPushButton("Tempo real")
+        for campo in (self.filtro_historico, self.quantidade_historico, self.inicio_historico, self.fim_historico, self.botao_historico, self.botao_tempo_real):
+            filtros.addWidget(campo)
+        self.ui.grp_grafico.layout().insertLayout(0, filtros)
+        self.botao_historico.clicked.connect(self._pedir_historico)
+        self.botao_tempo_real.clicked.connect(self.tempo_real_solicitado.emit)
+        self.filtro_historico.currentIndexChanged.connect(self._alternar_filtro)
+        self._alternar_filtro()
         self._pode_fechar = False
         self._dialogo_limites = None
         self.ui.btn_conectar.clicked.connect(self._pedir_conexao)
@@ -35,6 +60,21 @@ class MainWindow(QMainWindow):
         self.ui.combo_baud.setCurrentText(str(serial.get("baud_rate", "9600")))
         self.ui.spin_timeout.setValue(int(serial.get("timeout_s", 5)))
         self.ui.spin_limite_alerta.setValue(config.get("alertas", {}).get("limite_potencia_w", 2000.0))
+
+    def _alternar_filtro(self):
+        periodo = self.filtro_historico.currentIndex() == 1
+        self.inicio_historico.setEnabled(periodo)
+        self.fim_historico.setEnabled(periodo)
+
+    def _pedir_historico(self):
+        filtros = {"limite": self.quantidade_historico.value()}
+        if self.filtro_historico.currentIndex() == 1:
+            filtros["inicio_epoch"] = self.inicio_historico.dateTime().toSecsSinceEpoch()
+            filtros["fim_epoch"] = self.fim_historico.dateTime().toSecsSinceEpoch()
+        self.historico_solicitado.emit(filtros)
+
+    def mostrar_modo_grafico(self, titulo):
+        self.ui.grp_grafico.setTitle(titulo)
 
     def _pedir_conexao(self):
         self.conectar_solicitado.emit({"porta": self.ui.combo_porta.currentText().strip(),
