@@ -26,23 +26,27 @@ class MainController(QObject):
         self.view.limites_solicitados.connect(self.editar_limites)
         self.view.validacao_limites_solicitada.connect(self.validar_limites)
         self.view.disjuntor_solicitado.connect(self.acionar_disjuntor)
-        self.view.limite_potencia_alterado.connect(self.model.atualizar_limite_potencia)
         self.view.fechar_solicitado.connect(self.encerrar)
         self._carregar_dados()
         self._carregar_portas()
         self.view.configurar(self.config)
+        self.view.limite_potencia_alterado.connect(self.atualizar_limite_potencia)
         self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=True)
         self.model.gerar_historico_simulado()
         self.timer = QTimer(self)
-        self.timer.setInterval(2000)
+        self.timer.setInterval(self.config.get("serial", {}).get("intervalo_amostragem_ms", 2000))
         self.timer.timeout.connect(self.atualizar_telemetria)
         self.timer.start()
         self.atualizar_telemetria()
 
     def _carregar_dados(self):
         try:
-            regras = RegraRepository.listar_todos()
-            if regras:
+            regras_config = self.config.get("regras_limite")
+            regras = RegraRepository.listar_todos() if regras_config is None else []
+            if regras_config is not None:
+                self.model.atualizar_regras(regras_config)
+                RegraRepository.substituir_todas(regras_config)
+            elif regras:
                 self.model.atualizar_regras([
                     {"parametro": r["parametro"], "valor": r["valor_limite"], "unidade": r["unidade"]}
                     for r in regras
@@ -97,6 +101,14 @@ class MainController(QObject):
         self.registrar_evento("Conexão", "Conexão serial encerrada pelo operador.")
         logger.info("Conexão serial encerrada.")
 
+    def atualizar_limite_potencia(self, valor):
+        self.model.atualizar_limite_potencia(valor)
+        self.config.setdefault("alertas", {})["limite_potencia_w"] = valor
+        try:
+            salvar_config(self.config)
+        except OSError as exc:
+            self.view.erro(f"Não foi possível salvar as configurações.\n\nDetalhes: {exc}", "Erro ao Salvar")
+
     def validar_limites(self, regras):
         try:
             validar_regras(regras)
@@ -114,10 +126,17 @@ class MainController(QObject):
             validar_regras(regras)
             RegraRepository.substituir_todas(regras)
             self.model.atualizar_regras(regras)
+            self.config["regras_limite"] = [dict(regra) for regra in regras]
+            alertas = self.config.setdefault("alertas", {})
+            for unidade, chave in (("A", "limite_corrente_a"), ("V", "limite_tensao_v")):
+                valores = [regra["valor"] for regra in regras if regra["unidade"] == unidade]
+                if valores:
+                    alertas[chave] = min(valores)
+            salvar_config(self.config)
             self.registrar_evento("Configuração", f"Regras de limite atualizadas ({len(regras)} regra(s)).")
             logger.info("Regras de limite atualizadas pelo operador: %d regra(s).", len(regras))
-        except (sqlite3.Error, ValueError) as exc:
-            self.view.erro(f"Não foi possível salvar as regras no banco.\n\nDetalhes: {exc}", "Erro ao Salvar")
+        except (sqlite3.Error, ValueError, OSError) as exc:
+            self.view.erro(f"Não foi possível salvar as regras.\n\nDetalhes: {exc}", "Erro ao Salvar")
 
     def acionar_disjuntor(self, estado):
         try:

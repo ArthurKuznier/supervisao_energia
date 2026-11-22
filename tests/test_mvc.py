@@ -101,10 +101,47 @@ def test_validacao_mantem_dialogo_aberto_ate_corrigir_regra(app, banco, monkeypa
         assert avisos[-1][1] == "Campo Inválido"
         unidade.setText("A")
         dialogo.salvar()
-
     try:
         QTimer.singleShot(0, editar)
         controller.editar_limites()
         assert controller.model.regras[0]["unidade"] == "A"
+        config = config_manager.carregar_config()
+        assert config["regras_limite"] == controller.model.regras
+        assert config["alertas"]["limite_corrente_a"] == controller.model.regras[0]["valor"]
+    finally:
+        controller.encerrar()
+
+
+def test_aplica_intervalo_salvo_e_persiste_limite_potencia(app, banco):
+    config = deepcopy(config_manager._DEFAULT_CONFIG)
+    config["serial"]["intervalo_amostragem_ms"] = 750
+    view = MainWindow()
+    controller = MainController(view, config)
+    try:
+        assert controller.timer.interval() == 750
+        view.ui.spin_limite_alerta.setValue(3500)
+        salvo = config_manager.carregar_config()
+        assert salvo["alertas"]["limite_potencia_w"] == 3500
+        assert controller.model.limite_potencia == 3500
+        controller.conectar_serial({"porta": "COM8", "baud_rate": "9600", "timeout_s": 5})
+        assert config_manager.carregar_config()["serial"]["intervalo_amostragem_ms"] == 750
+    finally:
+        controller.encerrar()
+
+
+def test_regras_salvas_no_json_sao_restauradas_no_model_e_banco(app, banco):
+    config = deepcopy(config_manager._DEFAULT_CONFIG)
+    regras = [
+        {"parametro": "Corrente personalizada", "valor": 7.5, "unidade": "A"},
+        {"parametro": "Tensão personalizada", "valor": 225, "unidade": "V"},
+    ]
+    config["regras_limite"] = regras
+    config_manager.salvar_config(config)
+    view = MainWindow()
+    controller = MainController(view, config_manager.carregar_config())
+    try:
+        assert controller.model.regras == regras
+        with connection.get_connection() as conn:
+            assert [r[0] for r in conn.execute("SELECT valor_limite FROM regras_limite ORDER BY id")] == [7.5, 225]
     finally:
         controller.encerrar()
