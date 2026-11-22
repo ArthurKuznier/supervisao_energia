@@ -1,70 +1,96 @@
 import logging
-import sqlite3
-from datetime import datetime
+from copy import deepcopy
+from datetime import datetime, timezone
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 
-from database.config_manager import salvar_config
-from models.dispositivo_repository import DispositivoRepository
-from models.evento_repository import EventoRepository
 from models.monitoramento import Monitoramento
-from models.regra_repository import RegraRepository
 from models.telemetria import ErroValidacaoRegra, validar_regras
+from workers.database_worker import DatabaseWorker
 
 logger = logging.getLogger("smartgrid")
 
 
 class MainController(QObject):
+    pedido_banco = Signal(int, str, object)
+    parada_banco = Signal()
+    historico_recebido = Signal(list)
+
     def __init__(self, view, config):
         super().__init__(view)
         self.view = view
         self.config = config or {}
         self.model = Monitoramento(config)
         self.conectado = False
+        self.pronto = False
+        self.encerrado = False
+        self._encerrando = False
+        self._contador_pedidos = 0
+        self._retornos = {}
+        self._erros_notificados = set()
         self.view.conectar_solicitado.connect(self.conectar_serial)
         self.view.desconectar_solicitado.connect(self.desconectar_serial)
         self.view.limites_solicitados.connect(self.editar_limites)
         self.view.validacao_limites_solicitada.connect(self.validar_limites)
         self.view.disjuntor_solicitado.connect(self.acionar_disjuntor)
         self.view.fechar_solicitado.connect(self.encerrar)
-        self._carregar_dados()
         self._carregar_portas()
         self.view.configurar(self.config)
         self.view.limite_potencia_alterado.connect(self.atualizar_limite_potencia)
-        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=True)
+        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
         self.model.gerar_historico_simulado()
         self.timer = QTimer(self)
         self.timer.setInterval(self.config.get("serial", {}).get("intervalo_amostragem_ms", 2000))
         self.timer.timeout.connect(self.atualizar_telemetria)
+        self.thread_banco = QThread(self)
+        self.thread_banco.setObjectName("DatabaseThread")
+        self.worker_banco = DatabaseWorker()
+        self.worker_banco.moveToThread(self.thread_banco)
+        self.pedido_banco.connect(self.worker_banco.executar, Qt.QueuedConnection)
+        self.parada_banco.connect(self.worker_banco.encerrar, Qt.QueuedConnection)
+        self.worker_banco.resultado.connect(self._resultado_banco)
+        self.worker_banco.erro.connect(self._erro_banco)
+        self.worker_banco.finalizado.connect(self.thread_banco.quit, Qt.DirectConnection)
+        self.thread_banco.finished.connect(self.worker_banco.deleteLater)
+        self.thread_banco.finished.connect(self._banco_encerrado)
+        self.thread_banco.start()
+        self._solicitar("inicializar", {"regras_limite": self.config.get("regras_limite"),
+                                       "regras_padrao": self.model.regras}, self._dados_carregados)
+
+    def _solicitar(self, operacao, parametros, retorno=None):
+        if self._encerrando:
+            return
+        self._contador_pedidos += 1
+        pedido_id = self._contador_pedidos
+        if retorno is not None:
+            self._retornos[pedido_id] = retorno
+        self.pedido_banco.emit(pedido_id, operacao, deepcopy(parametros))
+        return pedido_id
+
+    @Slot(int, str, object)
+    def _resultado_banco(self, pedido_id, operacao, dados):
+        retorno = self._retornos.pop(pedido_id, None)
+        if retorno is not None and not self._encerrando:
+            retorno(dados)
+
+    @Slot(int, str, str)
+    def _erro_banco(self, pedido_id, operacao, mensagem):
+        self._retornos.pop(pedido_id, None)
+        logger.error("Falha na persistência (%s): %s", operacao, mensagem)
+        chave = (operacao, mensagem)
+        if not self._encerrando and chave not in self._erros_notificados:
+            self._erros_notificados.add(chave)
+            self.view.erro(f"Falha na persistência ({operacao}).\n\nDetalhes: {mensagem}", "Erro ao Salvar")
+
+    def _dados_carregados(self, dados):
+        self.model.atualizar_regras(dados["regras"])
+        if dados["dispositivo"]:
+            self.model.atualizar_disjuntor(dados["dispositivo"]["status"])
+        self.view.mostrar_eventos(dados["eventos"])
+        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=True)
+        self.pronto = True
         self.timer.start()
         self.atualizar_telemetria()
-
-    def _carregar_dados(self):
-        try:
-            regras_config = self.config.get("regras_limite")
-            regras = RegraRepository.listar_todos() if regras_config is None else []
-            if regras_config is not None:
-                self.model.atualizar_regras(regras_config)
-                RegraRepository.substituir_todas(regras_config)
-            elif regras:
-                self.model.atualizar_regras([
-                    {"parametro": r["parametro"], "valor": r["valor_limite"], "unidade": r["unidade"]}
-                    for r in regras
-                ])
-            else:
-                RegraRepository.substituir_todas(self.model.regras)
-        except (sqlite3.Error, ValueError) as exc:
-            logger.error("Falha ao carregar regras do banco: %s", exc)
-        try:
-            dispositivo = DispositivoRepository.buscar_por_tag("DISJ-PRINCIPAL")
-            if dispositivo:
-                self.model.atualizar_disjuntor(dispositivo["status"])
-        except (sqlite3.Error, ValueError) as exc:
-            logger.error("Falha ao sincronizar estado do disjuntor: %s", exc)
-        try:
-            self.view.mostrar_eventos(EventoRepository.listar_todos())
-        except sqlite3.Error as exc:
-            logger.error("Falha ao carregar histórico na tabela: %s", exc)
 
     def _carregar_portas(self):
         try:
@@ -75,10 +101,14 @@ class MainController(QObject):
         self.view.mostrar_portas(portas or [f"COM{i}" for i in range(1, 7)])
 
     def atualizar_telemetria(self):
+        if not self.pronto or self._encerrando:
+            return
         leitura = self.model.gerar_leitura_simulada()
+        dados = {**leitura.registro(), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.model.adicionar_potencia(leitura.potencia)
-        self.view.mostrar_leitura(leitura.registro())
+        self.view.mostrar_leitura(dados)
         self.view.plotar(self.model.eixo_x, self.model.potencias)
+        self._solicitar("medicao", {"dados": dados, "origem": "simulacao"})
         for medido, descricao in self.model.avaliar(leitura):
             logger.warning(descricao)
             self.registrar_evento("Alerta", descricao, medido)
@@ -88,10 +118,7 @@ class MainController(QObject):
         porta, baud = parametros["porta"], parametros["baud_rate"]
         self.view.mostrar_conexao(f"● Conectado ({porta} @ {baud})", conectado=True)
         self.config.setdefault("serial", {}).update(parametros)
-        try:
-            salvar_config(self.config)
-        except OSError:
-            pass
+        self._solicitar("config", self.config)
         self.registrar_evento("Conexão", f"Conectado à porta {porta} (baud rate {baud}).")
         logger.info("Conexão serial estabelecida: %s @ %s baud.", porta, baud)
 
@@ -104,10 +131,7 @@ class MainController(QObject):
     def atualizar_limite_potencia(self, valor):
         self.model.atualizar_limite_potencia(valor)
         self.config.setdefault("alertas", {})["limite_potencia_w"] = valor
-        try:
-            salvar_config(self.config)
-        except OSError as exc:
-            self.view.erro(f"Não foi possível salvar as configurações.\n\nDetalhes: {exc}", "Erro ao Salvar")
+        self._solicitar("config", self.config)
 
     def validar_limites(self, regras):
         try:
@@ -124,45 +148,60 @@ class MainController(QObject):
             return
         try:
             validar_regras(regras)
-            RegraRepository.substituir_todas(regras)
-            self.model.atualizar_regras(regras)
-            self.config["regras_limite"] = [dict(regra) for regra in regras]
-            alertas = self.config.setdefault("alertas", {})
-            for unidade, chave in (("A", "limite_corrente_a"), ("V", "limite_tensao_v")):
-                valores = [regra["valor"] for regra in regras if regra["unidade"] == unidade]
-                if valores:
-                    alertas[chave] = min(valores)
-            salvar_config(self.config)
-            self.registrar_evento("Configuração", f"Regras de limite atualizadas ({len(regras)} regra(s)).")
-            logger.info("Regras de limite atualizadas pelo operador: %d regra(s).", len(regras))
-        except (sqlite3.Error, ValueError, OSError) as exc:
-            self.view.erro(f"Não foi possível salvar as regras.\n\nDetalhes: {exc}", "Erro ao Salvar")
+        except ValueError as exc:
+            self.view.erro(str(exc), "Erro ao Salvar")
+            return
+        config = deepcopy(self.config)
+        config["regras_limite"] = [dict(regra) for regra in regras]
+        alertas = config.setdefault("alertas", {})
+        for unidade, chave in (("A", "limite_corrente_a"), ("V", "limite_tensao_v")):
+            valores = [regra["valor"] for regra in regras if regra["unidade"] == unidade]
+            if valores:
+                alertas[chave] = min(valores)
+        self._solicitar("regras", config, self._regras_salvas)
+
+    def _regras_salvas(self, regras):
+        self.model.atualizar_regras(regras)
+        self.config["regras_limite"] = [dict(regra) for regra in regras]
+        for unidade, chave in (("A", "limite_corrente_a"), ("V", "limite_tensao_v")):
+            valores = [regra["valor"] for regra in regras if regra["unidade"] == unidade]
+            if valores:
+                self.config.setdefault("alertas", {})[chave] = min(valores)
+        self.registrar_evento("Configuração", f"Regras de limite atualizadas ({len(regras)} regra(s)).")
+        logger.info("Regras de limite atualizadas pelo operador: %d regra(s).", len(regras))
 
     def acionar_disjuntor(self, estado):
-        try:
-            evento = DispositivoRepository.acionar("DISJ-PRINCIPAL", estado)
-            self.model.atualizar_disjuntor(estado)
-            self.view.mostrar_disjuntor(estado, habilitado=True)
-            self.view.inserir_evento(evento)
-            logger.info("Corte emergencial executado. Disjuntor ABERTO." if estado == "ABERTO" else "Disjuntor rearmado. Carga restabelecida.")
-        except (sqlite3.Error, ValueError) as exc:
-            if estado == "ABERTO":
-                mensagem = f"Falha ao executar o corte emergencial.\nO banco foi revertido (ROLLBACK).\n\nDetalhes: {exc}"
-                titulo = "Erro — Corte Emergencial"
-            else:
-                mensagem = f"Falha ao rearmar o disjuntor.\nRollback executado.\n\nDetalhes: {exc}"
-                titulo = "Erro — Rearme"
-            logger.error("Falha na atuação do disjuntor: %s", exc)
-            self.view.erro(mensagem, titulo)
+        if self.pronto:
+            self._solicitar("acionar", {"estado": estado}, lambda evento: self._disjuntor_salvo(estado, evento))
+
+    def _disjuntor_salvo(self, estado, evento):
+        self.model.atualizar_disjuntor(estado)
+        self.view.mostrar_disjuntor(estado, habilitado=True)
+        self.view.inserir_evento(evento)
+        logger.info("Corte emergencial executado. Disjuntor ABERTO." if estado == "ABERTO" else "Disjuntor rearmado. Carga restabelecida.")
 
     def registrar_evento(self, tipo, descricao, medido=None):
-        try:
-            EventoRepository.inserir(tipo, descricao, medido)
-        except sqlite3.Error as exc:
-            logger.error("Falha ao persistir evento: %s", exc)
-        self.view.inserir_evento({"data_hora": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                                 "tipo_evento": tipo, "descricao": descricao})
+        self._solicitar("evento", {"data_hora": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                                   "tipo_evento": tipo, "descricao": descricao, "valor_medido": medido},
+                        self.view.inserir_evento)
+
+    def consultar_historico(self, **filtros):
+        return self._solicitar("consultar", filtros, self.historico_recebido.emit)
 
     def encerrar(self):
+        if self._encerrando:
+            return
+        self._encerrando = True
+        self.pronto = False
         self.timer.stop()
+        self.parada_banco.emit()
+
+    @Slot()
+    def _banco_encerrado(self):
+        if not self.thread_banco.wait(0):
+            QTimer.singleShot(10, self._banco_encerrado)
+            return
+        self.thread_banco.deleteLater()
+        self.encerrado = True
+        self._retornos.clear()
         self.view.permitir_fechamento()

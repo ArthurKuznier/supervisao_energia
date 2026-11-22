@@ -12,15 +12,19 @@ class EventoRepository:
 
     @staticmethod
     def inserir(tipo_evento: str, descricao: str,
-                valor_medido: Optional[float] = None) -> int:
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                valor_medido: Optional[float] = None, data_hora=None,
+                dispositivo_tag="DISJ-PRINCIPAL") -> int:
+        agora = data_hora or datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         try:
             with get_connection() as conn:
+                dispositivo = conn.execute("SELECT id FROM dispositivos WHERE tag = ?", (dispositivo_tag,)).fetchone()
+                if dispositivo is None:
+                    raise ValueError(f"Dispositivo não encontrado: {dispositivo_tag}")
                 cursor = conn.execute(
                     "INSERT INTO historico_eventos "
-                    "(data_hora, tipo_evento, valor_medido, descricao) "
-                    "VALUES (?, ?, ?, ?)",
-                    (agora, tipo_evento, valor_medido, descricao),
+                    "(data_hora, tipo_evento, valor_medido, descricao, dispositivo_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (agora, tipo_evento, valor_medido, descricao, dispositivo["id"]),
                 )
                 return cursor.lastrowid
         except sqlite3.Error as exc:

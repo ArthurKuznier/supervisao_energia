@@ -13,7 +13,9 @@ from shiboken6 import isValid
 
 @pytest.fixture(scope="session")
 def _aplicacao():
-    return QApplication.instance() or QApplication([])
+    instancia = QApplication.instance() or QApplication([])
+    instancia.setQuitOnLastWindowClosed(False)
+    return instancia
 
 
 @pytest.fixture

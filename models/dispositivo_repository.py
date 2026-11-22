@@ -27,8 +27,9 @@ class DispositivoRepository:
             if resultado.rowcount != 1:
                 raise ValueError(f"Dispositivo não encontrado: {tag}")
             conn.execute(
-                "INSERT INTO historico_eventos (data_hora, tipo_evento, valor_medido, descricao) VALUES (?, ?, ?, ?)",
-                (agora, tipo, None, descricao),
+                "INSERT INTO historico_eventos (data_hora, tipo_evento, valor_medido, descricao, dispositivo_id) "
+                "VALUES (?, ?, ?, ?, (SELECT id FROM dispositivos WHERE tag = ?))",
+                (agora, tipo, None, descricao, tag),
             )
         return {"data_hora": agora, "tipo_evento": tipo, "descricao": descricao}
 
