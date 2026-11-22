@@ -19,6 +19,7 @@ class MainController(QObject):
     conectar_porta = Signal(dict)
     desconectar_porta = Signal()
     parada_serial = Signal()
+    comando_serial = Signal(str)
 
     def __init__(self, view, config):
         super().__init__(view)
@@ -56,6 +57,9 @@ class MainController(QObject):
         self.conectar_porta.connect(self.worker_serial.conectar, Qt.QueuedConnection)
         self.desconectar_porta.connect(self.worker_serial.desconectar, Qt.QueuedConnection)
         self.parada_serial.connect(self.worker_serial.encerrar, Qt.QueuedConnection)
+        self.comando_serial.connect(self.worker_serial.acionar, Qt.QueuedConnection)
+        self.worker_serial.estado_recebido.connect(self._estado_recebido)
+        self.worker_serial.comando_confirmado.connect(self._comando_confirmado)
         self.worker_serial.conectado.connect(self._serial_conectado)
         self.worker_serial.desconectado.connect(self._serial_desconectado)
         self.worker_serial.erro.connect(self._erro_serial)
@@ -217,12 +221,27 @@ class MainController(QObject):
         logger.info("Regras de limite atualizadas pelo operador: %d regra(s).", len(regras))
 
     def acionar_disjuntor(self, estado):
-        if self.pronto:
-            self._solicitar("acionar", {"estado": estado}, lambda evento: self._disjuntor_salvo(estado, evento))
+        if self.pronto and self.conectado and not self._encerrando:
+            self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
+            self.comando_serial.emit(estado)
+
+    @Slot(str)
+    def _estado_recebido(self, estado):
+        if self._encerrando:
+            return
+        self.model.atualizar_disjuntor(estado)
+        self.view.mostrar_disjuntor(estado, habilitado=self.conectado)
+        self._solicitar("sincronizar", {"estado": estado})
+
+    @Slot(str)
+    def _comando_confirmado(self, estado):
+        if self._encerrando:
+            return
+        self.model.atualizar_disjuntor(estado)
+        self.view.mostrar_disjuntor(estado, habilitado=self.conectado)
+        self._solicitar("acionar", {"estado": estado}, lambda evento: self._disjuntor_salvo(estado, evento))
 
     def _disjuntor_salvo(self, estado, evento):
-        self.model.atualizar_disjuntor(estado)
-        self.view.mostrar_disjuntor(estado, habilitado=True)
         self.view.inserir_evento(evento)
         logger.info("Corte emergencial executado. Disjuntor ABERTO." if estado == "ABERTO" else "Disjuntor rearmado. Carga restabelecida.")
 

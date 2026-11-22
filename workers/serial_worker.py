@@ -18,6 +18,8 @@ class SerialWorker(QObject):
     erro = Signal(str)
     portas = Signal(list)
     finalizado = Signal()
+    estado_recebido = Signal(str)
+    comando_confirmado = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -25,6 +27,8 @@ class SerialWorker(QObject):
         self.timer = None
         self.estado = "DESCONECTADO"
         self.buffer = bytearray()
+        self.pendente = None
+        self.sequencia = 0
 
     @Slot()
     def iniciar(self):
@@ -74,6 +78,8 @@ class SerialWorker(QObject):
             if self.estado in ("HELLO", "START") and monotonic() > self.prazo:
                 raise serial.SerialException("Timeout: a placa não confirmou o handshake.")
             if self.estado == "ATIVO":
+                if self.pendente and monotonic() > self.pendente["prazo"]:
+                    raise serial.SerialException("O disjuntor não confirmou o comando. Estado deve ser verificado na placa.")
                 if monotonic() - self.ultima_resposta > max(5, self.config.get("intervalo_amostragem_ms", 2000) / 1000 * 3):
                     raise serial.SerialException("Timeout: a placa parou de responder.")
                 if monotonic() - self.ultimo_ping >= 2:
@@ -89,9 +95,17 @@ class SerialWorker(QObject):
                 self.estado = "START"
                 self._enviar({"tipo": "START"})
             elif self.estado == "START":
+                if pacote.get("estado") not in ("ABERTO", "FECHADO"):
+                    raise ValueError("Estado inicial de disjuntor inválido.")
                 self.estado = "ATIVO"
                 self.ultima_resposta = self.ultimo_ping = monotonic()
                 self.conectado.emit(dict(self.config))
+                self.estado_recebido.emit(pacote["estado"])
+        elif self.estado == "ATIVO" and pacote["tipo"] == "ACK" and pacote.get("comando") == "DISJUNTOR":
+            if self.pendente and pacote.get("id") == self.pendente["id"] and pacote.get("estado") == self.pendente["estado"]:
+                self.ultima_resposta = monotonic()
+                self.pendente = None
+                self.comando_confirmado.emit(pacote["estado"])
         elif self.estado == "ATIVO" and pacote["tipo"] == "PONG":
             self.ultima_resposta = monotonic()
         elif self.estado == "ATIVO" and pacote["tipo"] == "TELEMETRIA":
@@ -102,6 +116,20 @@ class SerialWorker(QObject):
     def _falhar(self, mensagem):
         self.desconectar()
         self.erro.emit(mensagem)
+
+    @Slot(str)
+    def acionar(self, estado):
+        if self.estado != "ATIVO" or self.pendente:
+            return
+        if estado not in ("ABERTO", "FECHADO"):
+            self.erro.emit("Comando de disjuntor inválido.")
+            return
+        self.sequencia += 1
+        self.pendente = {"id": self.sequencia, "estado": estado, "prazo": monotonic() + float(self.config.get("timeout_s", 5))}
+        try:
+            self._enviar({"tipo": "DISJUNTOR", "id": self.sequencia, "estado": estado})
+        except (serial.SerialException, OSError) as exc:
+            self._falhar(str(exc))
 
     @Slot()
     def desconectar(self):
@@ -116,6 +144,7 @@ class SerialWorker(QObject):
                 self.porta.close()
                 self.porta = None
         self.estado = "DESCONECTADO"
+        self.pendente = None
         self.buffer.clear()
         self.desconectado.emit()
 

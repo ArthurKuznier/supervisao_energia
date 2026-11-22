@@ -46,6 +46,8 @@ class DatabaseWorker(QObject):
             return parametros["regras_limite"]
         elif operacao == "acionar":
             return DispositivoRepository.acionar("DISJ-PRINCIPAL", parametros["estado"])
+        elif operacao == "sincronizar":
+            DispositivoRepository.atualizar_status("DISJ-PRINCIPAL", parametros["estado"])
         elif operacao == "evento":
             evento = dict(parametros)
             evento["id"] = EventoRepository.inserir(evento["tipo_evento"], evento["descricao"],
