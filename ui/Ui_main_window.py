@@ -108,7 +108,7 @@ class Ui_MainWindow(object):
         linha2 = QHBoxLayout()
         linha2.setSpacing(12)
 
-        self.grp_grafico = QGroupBox(u"Histórico de Consumo - Últimas 24 horas")
+        self.grp_grafico = QGroupBox(u"Monitoramento em Tempo Real")
         self.grp_grafico.setObjectName(u"grp_grafico")
         grafico_layout = QVBoxLayout(self.grp_grafico)
 
@@ -137,7 +137,7 @@ class Ui_MainWindow(object):
         self.lbl_baud = QLabel(u"Baud Rate:")
         self.combo_baud = QComboBox()
         self.combo_baud.setObjectName(u"combo_baud")
-        self.combo_baud.addItems(["9600", "115200"])
+        self.combo_baud.addItems(["9600", "19200", "38400", "115200"])
 
         self.lbl_timeout = QLabel(u"Timeout (s):")
         self.spin_timeout = QSpinBox()

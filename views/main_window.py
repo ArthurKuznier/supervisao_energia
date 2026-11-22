@@ -18,6 +18,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.ui.combo_porta.setEditable(True)
         self._pode_fechar = False
         self._dialogo_limites = None
         self.ui.btn_conectar.clicked.connect(self._pedir_conexao)

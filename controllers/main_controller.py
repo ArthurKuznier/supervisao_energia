@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from models.monitoramento import Monitoramento
 from models.telemetria import ErroValidacaoRegra, validar_regras
 from workers.database_worker import DatabaseWorker
+from workers.serial_worker import SerialWorker
 
 logger = logging.getLogger("smartgrid")
 
@@ -15,6 +16,9 @@ class MainController(QObject):
     pedido_banco = Signal(int, str, object)
     parada_banco = Signal()
     historico_recebido = Signal(list)
+    conectar_porta = Signal(dict)
+    desconectar_porta = Signal()
+    parada_serial = Signal()
 
     def __init__(self, view, config):
         super().__init__(view)
@@ -34,14 +38,29 @@ class MainController(QObject):
         self.view.validacao_limites_solicitada.connect(self.validar_limites)
         self.view.disjuntor_solicitado.connect(self.acionar_disjuntor)
         self.view.fechar_solicitado.connect(self.encerrar)
-        self._carregar_portas()
         self.view.configurar(self.config)
         self.view.limite_potencia_alterado.connect(self.atualizar_limite_potencia)
         self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
-        self.model.gerar_historico_simulado()
-        self.timer = QTimer(self)
-        self.timer.setInterval(self.config.get("serial", {}).get("intervalo_amostragem_ms", 2000))
-        self.timer.timeout.connect(self.atualizar_telemetria)
+        self._serial_finalizado = False
+        self._banco_finalizado = False
+        self._conectando = False
+        self.thread_serial = QThread(self)
+        self.thread_serial.setObjectName("SerialThread")
+        self.worker_serial = SerialWorker()
+        self.worker_serial.moveToThread(self.thread_serial)
+        self.thread_serial.started.connect(self.worker_serial.iniciar)
+        self.conectar_porta.connect(self.worker_serial.conectar, Qt.QueuedConnection)
+        self.desconectar_porta.connect(self.worker_serial.desconectar, Qt.QueuedConnection)
+        self.parada_serial.connect(self.worker_serial.encerrar, Qt.QueuedConnection)
+        self.worker_serial.conectado.connect(self._serial_conectado)
+        self.worker_serial.desconectado.connect(self._serial_desconectado)
+        self.worker_serial.erro.connect(self._erro_serial)
+        self.worker_serial.leitura.connect(self.receber_telemetria)
+        self.worker_serial.portas.connect(self._portas_recebidas)
+        self.worker_serial.finalizado.connect(self.thread_serial.quit, Qt.DirectConnection)
+        self.thread_serial.finished.connect(self.worker_serial.deleteLater)
+        self.thread_serial.finished.connect(self._serial_encerrado)
+        self.thread_serial.start()
         self.thread_banco = QThread(self)
         self.thread_banco.setObjectName("DatabaseThread")
         self.worker_banco = DatabaseWorker()
@@ -87,46 +106,68 @@ class MainController(QObject):
         if dados["dispositivo"]:
             self.model.atualizar_disjuntor(dados["dispositivo"]["status"])
         self.view.mostrar_eventos(dados["eventos"])
-        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=True)
+        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
         self.pronto = True
-        self.timer.start()
-        self.atualizar_telemetria()
 
-    def _carregar_portas(self):
-        try:
-            from serial.tools import list_ports
-            portas = [porta.device for porta in list_ports.comports()]
-        except ImportError:
-            portas = []
-        self.view.mostrar_portas(portas or [f"COM{i}" for i in range(1, 7)])
+    @Slot(list)
+    def _portas_recebidas(self, portas):
+        preferida = self.config.get("serial", {}).get("porta", "COM1")
+        self.view.mostrar_portas(list(dict.fromkeys([preferida, *portas])))
+        self.view.configurar(self.config)
 
-    def atualizar_telemetria(self):
-        if not self.pronto or self._encerrando:
+    @Slot(object)
+    def receber_telemetria(self, leitura):
+        if not self.pronto or not self.conectado or self._encerrando:
             return
-        leitura = self.model.gerar_leitura_simulada()
         dados = {**leitura.registro(), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.model.adicionar_potencia(leitura.potencia)
         self.view.mostrar_leitura(dados)
         self.view.plotar(self.model.eixo_x, self.model.potencias)
-        self._solicitar("medicao", {"dados": dados, "origem": "simulacao"})
+        self._solicitar("medicao", {"dados": dados, "origem": "serial"})
         for medido, descricao in self.model.avaliar(leitura):
             logger.warning(descricao)
             self.registrar_evento("Alerta", descricao, medido)
 
     def conectar_serial(self, parametros):
+        if not self.pronto or self._encerrando or self.conectado or self._conectando:
+            return
+        config = {**self.config.get("serial", {}), **parametros}
+        self._conectando = True
+        self.view.mostrar_conexao("Negociando conexão…", ocupado=True)
+        self.conectar_porta.emit(config)
+
+    @Slot(dict)
+    def _serial_conectado(self, parametros):
+        if self._encerrando:
+            return
+        self._conectando = False
         self.conectado = True
         porta, baud = parametros["porta"], parametros["baud_rate"]
         self.view.mostrar_conexao(f"● Conectado ({porta} @ {baud})", conectado=True)
         self.config.setdefault("serial", {}).update(parametros)
         self._solicitar("config", self.config)
         self.registrar_evento("Conexão", f"Conectado à porta {porta} (baud rate {baud}).")
-        logger.info("Conexão serial estabelecida: %s @ %s baud.", porta, baud)
 
     def desconectar_serial(self):
+        self._conectando = False
+        self.desconectar_porta.emit()
+
+    @Slot()
+    def _serial_desconectado(self):
+        estava_conectado = self.conectado
         self.conectado = False
-        self.view.mostrar_conexao("● Desconectado")
-        self.registrar_evento("Conexão", "Conexão serial encerrada pelo operador.")
-        logger.info("Conexão serial encerrada.")
+        if not self._conectando:
+            self.view.mostrar_conexao("● Desconectado")
+        self.view.mostrar_disjuntor(self.model.disjuntor.estado, habilitado=False)
+        if estava_conectado:
+            self.registrar_evento("Conexão", "Conexão serial encerrada.")
+
+    @Slot(str)
+    def _erro_serial(self, mensagem):
+        self._conectando = False
+        self._serial_desconectado()
+        if not self._encerrando:
+            self.view.erro(mensagem, "Erro de comunicação serial")
 
     def atualizar_limite_potencia(self, valor):
         self.model.atualizar_limite_potencia(valor)
@@ -193,7 +234,15 @@ class MainController(QObject):
             return
         self._encerrando = True
         self.pronto = False
-        self.timer.stop()
+        self.parada_serial.emit()
+
+    @Slot()
+    def _serial_encerrado(self):
+        if not self.thread_serial.wait(0):
+            QTimer.singleShot(10, self._serial_encerrado)
+            return
+        self.thread_serial.deleteLater()
+        self._serial_finalizado = True
         self.parada_banco.emit()
 
     @Slot()
@@ -202,6 +251,8 @@ class MainController(QObject):
             QTimer.singleShot(10, self._banco_encerrado)
             return
         self.thread_banco.deleteLater()
-        self.encerrado = True
+        self._banco_finalizado = True
+        self.encerrado = self._serial_finalizado and self._banco_finalizado
         self._retornos.clear()
-        self.view.permitir_fechamento()
+        if self.encerrado:
+            self.view.permitir_fechamento()
